@@ -1,0 +1,78 @@
+# Read a PDF file and convert its contents to vector embeddings and populate the HANA DB using gen_ai_hub LANGCHAIN API class
+
+# Load Library
+import os
+import requests, json
+import fitz 
+import nltk 
+from gen_ai_hub.proxy.core.proxy_clients import get_proxy_client
+from gen_ai_hub.proxy.langchain.init_models import init_embedding_model
+from langchain_community.vectorstores import HanaDB
+from hdbcli import dbapi
+from langchain.docstore.document import Document
+from langchain.text_splitter import RecursiveCharacterTextSplitter
+from nltk.tokenize import sent_tokenize
+
+# Extract text from pdf file
+def extract_text_from_pdf(pdf_path):
+    pdf_document = fitz.open(pdf_path)
+    text = ""
+    for page_num in range(len(pdf_document)):
+        page = pdf_document.load_page(page_num)
+        text += page.get_text()
+    return text
+
+# Group sentences into small chunks
+def group_sentences(sentences, sentences_per_chunk):
+    chunks = []
+    for i in range(0, len(sentences), sentences_per_chunk):
+        chunk = " ".join(sentences[i:i + sentences_per_chunk])
+        chunks.append(chunk)
+    return chunks
+
+pdf_path = "ServiceTickets.pdf"
+pdf_text = extract_text_from_pdf(pdf_path)
+
+# Split the text into sentences
+sentences = sent_tokenize(pdf_text)
+
+# Define the number of sentences per chunk
+sentences_per_chunk = 5
+chunks = group_sentences(sentences, sentences_per_chunk)
+
+# Create a list to hold Document objects
+documents_to_index = []
+
+# Create Document objects for each chunk
+for i, chunk in enumerate(chunks):
+    document = Document(page_content=chunk, metadata={"source": pdf_path, "chunk_number": i + 1})
+    documents_to_index.append(document)
+
+# Get reference to GenAI
+os.environ["AICORE_AUTH_URL"] = "" + "/oauth/token"
+os.environ["AICORE_CLIENT_ID"] = ""
+os.environ["AICORE_CLIENT_SECRET"] = ""
+os.environ["AICORE_RESOURCE_GROUP"] = "default"
+os.environ["AICORE_BASE_URL"] = "" + "/v2"
+
+proxy_client = get_proxy_client("gen-ai-hub")
+
+# Initiate text embeddings
+embeddings = init_embedding_model('text-embedding-ada-002')
+
+# Connect to HANA DB
+hana_conn = dbapi.connect(
+    address='hana.trial-us10.hanacloud.ondemand.com',
+    port='443', 
+    user='DBADMIN', 
+    password='', 
+    encrypt=True
+    # sslValidateCertificate=True
+)
+cursor = hana_conn.cursor()
+
+# Enter the vector table name
+hana_vectordb = HanaDB(embedding=embeddings, connection=hana_conn, table_name="<Vector table name>")
+
+# Pass pdf content to HANA DB
+hana_vectordb.add_documents(documents_to_index)
